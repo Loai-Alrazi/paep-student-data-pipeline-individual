@@ -223,3 +223,64 @@ The four missing values are the blank CSV student ID, CSV student `1006`'s
 major, API student `1002`'s GPA, and API student `1011`'s attendance. Measure them
 before any recovery. Processing Time has no fixed expected value; it must be
 measured for each pipeline run.
+
+# Final Repository Extension
+
+The final repository preserves the canonical contract above and adds two
+optional enrichment sources. They reuse `student_id` after source-specific
+normalization and do not alter the expected 8 valid / 6 rejected academic
+records.
+
+## MongoDB Source Schema
+
+Collection: `paep_student_pipeline.student_profiles`
+
+| Field | Type | Rule |
+| --- | --- | --- |
+| `student_id` | integer | required, unique, compatible with canonical CSV IDs |
+| `advisor_name` | string | required; whitespace normalized and title-cased |
+| `scholarship_status` | string | required; whitespace normalized and title-cased |
+
+The reproducible seed is `data/raw/mongodb_students.json` and is loaded by
+`scripts/seed_mongodb.py`.
+
+## Public Web API Normalized Schema
+
+Endpoint: `https://jsonplaceholder.typicode.com/users`
+
+The source adapter maps `student_id = student_id_offset + id`, where the
+configured offset is `1000`. It emits:
+
+1. `student_id`
+2. `web_name`
+3. `web_username`
+4. `web_email`
+5. `web_phone`
+6. `web_website`
+7. `web_city`
+8. `company_name`
+
+The `web_` prefix prevents accidental collisions with canonical identity
+fields. JSONPlaceholder only supplies IDs 1 through 10, so web fields are null
+for final students 1011 and 1012.
+
+## Extension Integration Rules
+
+- The original CSV/API/SQLite inner join is unchanged.
+- MongoDB and web inputs are source-validated and cleaned independently.
+- Each supplemental input must have unique `student_id` values.
+- Supplemental columns may not overwrite existing integrated columns.
+- Supplemental inputs use one-to-one left joins, preserving every valid core
+  student even when enrichment is absent.
+- All supplemental columns participate in incremental record fingerprints.
+
+## Extended Final Columns and Lineage
+
+With both optional sources enabled, the output order is the 12 canonical
+columns, the 2 MongoDB columns, the 7 web columns, and then
+`performance_level`, `attendance_status`, and `source` (24 columns total).
+Lineage is `CSV|API|DATABASE|MONGODB|WEB`.
+
+The same final snapshot is written to CSV and replaces the MongoDB collection
+`paep_student_pipeline.final_students`, which enforces a unique index on
+`student_id`.

@@ -1,281 +1,193 @@
-# Multi-Source Student Data Pipeline
+# PAEP Student Data Pipeline — Final
 
-A group project for the PAEP Data Engineering course: a Python ETL pipeline that collects student data from three sources (CSV file, REST API, and SQLite database), validates and cleans it, integrates it into one analysis-ready dataset, and produces both valid and rejected outputs with full logging, metrics, and lineage.
+An extended multi-source ETL pipeline for the PAEP Data Engineering course.
+It starts from the latest clean `main` of the original project and adds:
 
-The pipeline follows this flow:
+- MongoDB as a supplemental input source.
+- [JSONPlaceholder `/users`](https://jsonplaceholder.typicode.com/users) as a
+  simple public web API source.
+- One consolidated output collection in MongoDB, while retaining CSV outputs
+  for easy inspection and rejected-record auditing.
 
-```text
-Multiple Sources (CSV | REST API | SQLite)
-                    |
-                 Extract
-                    |
-                 Validate
-                    |
-                  Clean
-                    |
-                Integrate
-                    |
-                Transform
-                    |
-             Final Validation
-                    |
-        +-----------+-----------+
-        |                       |
-  Valid Records          Invalid Records
-        |                       |
-final_dataset.csv      rejected_records.csv
-```
+The original repository is not modified by this project. Its history is kept as
+the read-only `upstream` remote; push to that remote is disabled.
 
-## Project Overview
-
-The same student exists in three different systems: identity data in a CSV file, academic data behind a REST API, and course enrollments in a SQLite database. This project builds one automated pipeline that:
-
-- Extracts all three sources (the API source always works over real HTTP requests).
-- Validates each source against the data quality rules before anything is merged.
-- Cleans recoverable problems (duplicates, whitespace, inconsistent case).
-- Integrates the sources on the shared `student_id` key (one row per student).
-- Transforms the data: type handling, missing-value imputation from raw-API medians, and derived columns.
-- Runs a final validation and splits the result into valid and rejected records.
-- Writes the outputs and records stage-by-stage logs and pipeline metrics.
-
-On the canonical dataset the pipeline produces **8 valid records** and **6 rejected records**, and asserts this end-to-end in the test suite. The intended final order is documented in [PROJECT_PLAN.md](PROJECT_PLAN.md); field schemas, quality rules, and expected values are defined in [DATA_CONTRACT.md](DATA_CONTRACT.md).
-
-## Architecture
-
-The project is a Python package structure — no stage lives inside `main.py`:
+## Pipeline flow
 
 ```text
-student_data_pipeline/
-├── app/
-│   ├── sources/        # CSVSource, APISource, DatabaseSource, BaseSource contract
-│   ├── transformation/ # cleaner.py, transformer.py, integration.py
-│   ├── validation/     # quality.py (source and final validation rules)
-│   ├── output/         # csv_writer.py
-│   └── utils/          # config_loader, logger, metrics, incremental, lineage
-├── data/
-│   ├── raw/            # canonical students.csv
-│   ├── processed/      # final_dataset.csv (generated)
-│   ├── rejected/       # rejected_records.csv (generated)
-│   └── state/          # pipeline_state.json (incremental state, generated)
-├── database/           # schema.sql, seed.sql, students.db
-├── logs/               # pipeline.log (generated)
-├── mock_api/           # local REST API serving the canonical seed data
-├── tests/              # 283 tests
-├── main.py             # orchestration only
-├── config.json         # runtime configuration
-└── requirements.txt    # pandas, requests, pytest
+CSV -----------+
+Academic API --+--> validate --> clean --> core inner join ----+
+SQLite --------+                                             |
+                                                             +--> transform
+MongoDB -------+--> validate --> clean --> optional left join |    + validate
+Web API -------+--> normalize --> validate --> clean ---------+         |
+                                                                       +--> CSV
+                                                                       +--> MongoDB
 ```
 
-`main.py` composes reusable modules only — extraction, source validation, cleaning, integration, transformation, lineage, final validation, incremental processing, metrics, logging, and output writing. All configuration (paths, endpoint, timeout, incremental mode) is loaded at runtime from `config.json` through `app/utils/config_loader.py`; nothing is hard-coded.
+The three academic sources remain mandatory and use the original one-to-one
+inner join. MongoDB and the public web API are compatible after normalization,
+so they reuse the same validation and cleaning pipeline. They are left-joined
+as enrichment sources: a missing optional profile never removes an otherwise
+valid academic student.
 
-## Data Sources
+## Sources
 
-All three sources share the `student_id` key.
+| Source | Purpose | Key fields | Expected rows |
+| --- | --- | --- | ---: |
+| CSV | Identity | `student_id`, name, age, major, city | 14 raw |
+| Local REST API | Academic status | `student_id`, GPA, attendance, status | 13 raw |
+| SQLite | Enrollment | `student_id`, course, score | 12 joined |
+| MongoDB | Student profile | `student_id`, advisor, scholarship | 12 seeded |
+| JSONPlaceholder | Web-directory demo | normalized `student_id`, `web_*`, company | 10 |
 
-| Source | Location | Fields | Records |
-| --- | --- | --- | --- |
-| CSV | `data/raw/students.csv` | `student_id`, `student_name`, `age`, `major`, `city` | 14 |
-| REST API | `http://localhost:8000/students` (served by `mock_api/server.py`) | `student_id`, `gpa`, `attendance`, `status` | 13 |
-| SQLite | `database/students.db` (`courses` ⟕ `enrollments`) | `student_id`, `course_name`, `credit_hours`, `semester`, `score` | 12 joined |
+JSONPlaceholder IDs `1..10` are mapped to student IDs `1001..1010` using the
+configurable `student_id_offset=1000`. Its schema does not pretend to be an
+academic schema: it has a small adapter that produces namespaced `web_*`
+columns. This is intentionally a JSON web API rather than brittle HTML scraping,
+matching the requested low-complexity learning example.
 
-- The CSV intentionally contains a blank ID, an extra exact duplicate, an out-of-range age, a missing major, and extra/inconsistent whitespace.
-- The API source sends a real HTTP request, receives and parses JSON, and explicitly handles connection errors, timeouts, HTTP errors, invalid JSON, and empty responses. It never reads the seed file (`mock_api/students_academic.json`) directly.
-- The SQLite source runs the integrated read-only JOIN query defined in `DATA_CONTRACT.md` and always closes the connection.
+## Final dataset
 
-## ETL Pipeline
+The canonical run still produces 8 valid academic students and 6 rejected
+records. With both enrichments enabled, the final dataset has 24 columns:
 
-`main.py` executes the stages in the official order:
+- 12 original academic columns.
+- MongoDB: `advisor_name`, `scholarship_status`.
+- Web API: `web_name`, `web_username`, `web_email`, `web_phone`,
+  `web_website`, `web_city`, `company_name`.
+- Derived/metadata: `performance_level`, `attendance_status`, `source`.
 
-1. **Extract** — `load_data()` (CSV), `extract_api_data()` (HTTP), `extract_database()` (SQL JOIN), each returning a raw `DataFrame`.
-2. **Validate** — source validation enforces the quality rules per record; failures (missing ID, out-of-range values, IDs incompatible with the canonical CSV IDs) are collected for the rejected output.
-3. **Clean** — exact duplicates removed, leading/trailing whitespace stripped, multiple internal spaces collapsed, text case normalized.
-4. **Integrate** — the three cleaned sources are merged on `student_id`; a student must be present in all three contributing sources, giving one row per student.
-5. **Transform** — missing GPA/attendance imputed with medians computed from the complete raw API source (3.0 and 85), types normalized, and derived columns `performance_level` and `attendance_status` added from the rule tables in `DATA_CONTRACT.md`.
-6. **Final Validation** — the same quality rules applied to the transformed dataset; anything still invalid is split off.
-7. **Load** — valid records to `data/processed/final_dataset.csv`, rejected records with their reasons to `data/rejected/rejected_records.csv`.
+Students `1011` and `1012` have null `web_*` fields because the demonstration
+API has only ten users. They remain in the dataset by design. The same final
+snapshot is written to:
 
-## Data Quality
+- `data/processed/final_dataset.csv`
+- MongoDB collection `paep_student_pipeline.final_students`
 
-Validation rules (checked at source validation and again at final validation):
+Rejected source records remain in `data/rejected/rejected_records.csv` with an
+explicit source, stage, and reason.
 
-| Rule | Constraint |
-| --- | --- |
-| `student_id` | not null; unique after exact-duplicate removal |
-| `age` | 16 ≤ age ≤ 80 |
-| `gpa` | 0 ≤ gpa ≤ 4 |
-| `attendance` | 0 ≤ attendance ≤ 100 |
-| `score` | 0 ≤ score ≤ 100 |
-| cross-source IDs | API/Database IDs must be compatible with the canonical CSV IDs |
+## Quick start
 
-Recoverable problems are repaired before the final split; unrecoverable problems are rejected with an explicit reason.
+Requirements: Python 3.12+ and either Docker or an existing MongoDB instance.
 
-**Rejected records on the canonical dataset (6):**
+1. Install dependencies:
 
-| Student ID | Rejection reason |
-| --- | --- |
-| `1005` | Invalid Age (`15`) |
-| `1003` | Invalid Attendance (`105`) |
-| `1004` | Invalid GPA (`4.5`) |
-| `1010` | Invalid Score (`105`) |
-| `1099` | Incompatible student_id |
-| *(blank)* | Missing student_id |
+   ```bash
+   python -m pip install -r requirements.txt
+   ```
 
-## Reference Results (Canonical Run)
+2. Start MongoDB and seed the input collection:
 
-These are the documented expected outcomes of running the pipeline on the canonical dataset — they are reference values verified by tests, not hard-coded values in the pipeline code.
+   ```bash
+   docker compose up -d mongodb
+   python scripts/seed_mongodb.py
+   ```
 
-| Metric | Value |
-| --- | --- |
-| CSV records | 14 |
-| API records | 13 |
-| Database records (joined) | 12 |
-| Duplicate records (extra copies removed) | 1 |
-| Missing values (raw, before recovery) | 4 |
-| Integrated / final valid records | 8 |
-| Rejected records | 6 |
-
-Imputation reference values, computed from the full raw API source before any rejection:
-
-- Valid GPA median = **3.0** → student `1002` GPA becomes **3.0**.
-- Valid attendance median = **85** → student `1011` attendance becomes **85**.
-
-Final valid students: `1001, 1002, 1006, 1007, 1008, 1009, 1011, 1012`.
-
-## Installation
-
-Requires Python 3.12+.
-
-```bash
-pip install -r requirements.txt
-```
-
-Dependencies: `pandas`, `requests`, `pytest` (plus the Python standard library, including `sqlite3`).
-
-## Running
-
-1. **Start the mock REST API** (serves `GET /students` on port 8000):
+3. Start the existing academic mock API in one terminal:
 
    ```bash
    python mock_api/server.py
    ```
 
-2. **Run the pipeline** in a second terminal:
+4. Run the pipeline in another terminal:
 
    ```bash
    python main.py
    ```
 
-   The pipeline reads `config.json` by default and writes `data/processed/final_dataset.csv`, `data/rejected/rejected_records.csv`, `data/state/pipeline_state.json`, and `logs/pipeline.log`.
+5. Inspect the single MongoDB dataset:
 
-3. **Run the tests**:
+   ```bash
+   mongosh "mongodb://localhost:27017/paep_student_pipeline" \
+     --eval "db.final_students.find().sort({student_id: 1}).pretty()"
+   ```
+
+6. Run the offline test suite:
 
    ```bash
    python -m pytest -q
    ```
 
-   The test suite (283 tests) spins up its own mock API on a free port, so it does not need the server from step 1.
-
-## Output
-
-| File | Contents |
-| --- | --- |
-| `data/processed/final_dataset.csv` | 8 valid records, 15 columns: `student_id`, `student_name`, `age`, `major`, `city`, `gpa`, `attendance`, `status`, `course_name`, `credit_hours`, `semester`, `score`, `performance_level`, `attendance_status`, `source` |
-| `data/rejected/rejected_records.csv` | 6 rejected records with their `error_reason` values |
-| `logs/pipeline.log` | INFO log for every stage plus the pipeline metrics summary |
-| `data/state/pipeline_state.json` | incremental processing state from the last run |
+The tests use local HTTP fixtures and in-memory fakes for MongoDB, so they do
+not need internet access or a running MongoDB server.
 
 ## Configuration
 
-`config.json` defines the source paths, the API endpoint and timeout, the output and log paths, and the incremental settings. The pipeline loads it at runtime; a different configuration file can be passed programmatically via `main(config_path=...)`.
+All extensions are controlled in `config.json`:
 
-## Incremental Processing
-
-When `incremental.enabled` is `true`, each run fingerprints the integrated data against the saved state in `data/state/pipeline_state.json`. New or changed students are fully reprocessed; unchanged students are reused from the previous final output. A change in the raw-API imputation medians is part of the fingerprint, so affected rows are reprocessed instead of reusing stale values. If the previous final output is missing or unusable, the run falls back to full processing, and a failed state save rolls both the output and the state back to their previous versions.
-
-## Data Lineage
-
-The final `source` column records where each row came from. Records built from all three sources carry the value `CSV|API|DATABASE`, as defined in `DATA_CONTRACT.md`.
-
-## Pipeline Metrics
-
-Every run logs a summary with total records per source, integrated, valid, rejected, duplicate, and missing-value counts, plus the measured processing time, for example:
-
-```text
----
-## PIPELINE EXECUTION SUMMARY
-
-CSV Records : 14
-API Records : 13
-Database Records : 12
-Integrated Records : 8
-Valid Records : 8
-Rejected Records : 6
-Duplicate Records : 1
-Missing Values : 4
-Processing Time : 2.20 seconds
------------------------------------
+```json
+{
+  "sources": {
+    "mongodb": {
+      "enabled": true,
+      "uri": "mongodb://localhost:27017",
+      "uri_env": "MONGODB_URI",
+      "database": "paep_student_pipeline",
+      "collection": "student_profiles"
+    },
+    "web": {
+      "enabled": true,
+      "url": "https://jsonplaceholder.typicode.com/users",
+      "timeout_seconds": 10,
+      "student_id_offset": 1000
+    }
+  },
+  "output": {
+    "mongodb": {
+      "enabled": true,
+      "uri": "mongodb://localhost:27017",
+      "uri_env": "MONGODB_URI",
+      "database": "paep_student_pipeline",
+      "collection": "final_students"
+    }
+  }
+}
 ```
 
-## Reusable Source Architecture
+Set `MONGODB_URI` to override the URI without committing credentials. Each new
+section is optional for backward compatibility: configurations from the
+original project still run the original CSV/API/SQLite-to-CSV flow.
 
-All three sources implement one contract: `BaseSource` (abstract class in `app/sources/base_source.py`) with a single method `extract() -> pd.DataFrame`. `CSVSource`, `APISource`, and `DatabaseSource` subclass it, while the original module-level functions (`load_data`, `extract_api_data`, `extract_database`) remain as backward-compatible wrappers. A future source such as Excel, JSON, or MySQL can be added by implementing `BaseSource.extract()` without rewriting the pipeline — no factory, registry, or dependency injection.
+## Design decisions
 
-## Testing
+- All five input classes implement `BaseSource.extract() -> DataFrame`.
+- MongoDB and web records pass through the existing source validation and
+  cleaning functions after source-specific extraction/normalization.
+- Supplemental fields are namespaced or checked for collisions, so a source
+  cannot silently overwrite a core academic field.
+- Duplicate supplemental IDs and incompatible IDs are rejected before merging.
+- Supplemental values are included in incremental fingerprints. Changing an
+  advisor, scholarship, email, or company reprocesses that student.
+- The MongoDB destination is replaced with the complete validated snapshot on
+  each successful run and has a unique index on `student_id`, preventing stale
+  documents from surviving.
+- CSV/state consistency from the original incremental pipeline is preserved.
+  MongoDB loading happens after the state is committed, so an unavailable
+  destination can be retried on the next unchanged run without corrupting the
+  reusable snapshot.
 
-The suite has 283 tests covering the assignment's required checks and beyond:
+## Project structure
 
-- CSV loading, API extraction over real HTTP requests, and SQLite extraction (including error paths: connection errors, timeouts, HTTP errors, invalid JSON, empty responses).
-- Duplicate removal, missing-value handling and imputation, invalid-record rejection with reasons, source integration, and `final_dataset.csv` creation.
-- An end-to-end pipeline test that runs the full order against the canonical fixture data and asserts the expected 8 valid / 6 rejected result, plus tests for configuration loading, logging, metrics, incremental processing, lineage, cleaning, transformation, and output writing.
+```text
+app/
+  sources/
+    mongodb_source.py       # MongoDB input adapter
+    web_api_source.py       # JSONPlaceholder normalization adapter
+  output/
+    mongodb_writer.py       # complete final collection loader
+  transformation/
+    integration.py          # original core join + optional enrichment join
+data/raw/
+  mongodb_students.json     # reproducible MongoDB source seed
+scripts/
+  seed_mongodb.py
+compose.yaml
+config.json
+main.py
+tests/
+```
 
-## Assignment Questions
-
-Answers to the final student questions, based on this project.
-
-### 1. Why do we need a data pipeline when dealing with multiple sources?
-
-لأن الكيان الواحد في الواقع عادةً ما يكون موزعًا على أكثر من نظام. في هذا المشروع، بيانات هوية الطالب موجودة في ملف CSV، ومعدله (GPA) ونسبة حضوره خلف REST API، ومساراته الدراسية في قاعدة بيانات SQLite — بصيغ مختلفة وبمشاكل جودة مختلفة، ولا يمكن الإجابة على سؤال مثل «ما المواد التي يدرسها الطلاب المعرضون للخطر؟» دون دمج هذه المصادر. يقوم الـ Data Pipeline بأتمتة الاستخراج وفحوصات الجودة والدمج على المفتاح `student_id` في خطوة واحدة قابلة للتكرار، بحيث تنتج كل عملية تشغيل مجموعة بيانات واحدة موثوقة بدلًا من دمج يدوي هش يعتمد على النسخ واللصق.
-
-### 2. What is the difference between raw data and processed data?
-
-البيانات الخام هي ما تقدّمه المصادر تمامًا مع مشاكلها: ملف CSV لدينا يحتوي على `student_id` فارغ، ونسخة مكررة إضافية للطالب `1007`، وعمر `15`، وأسماء مثل `" Ahmed Ali "` بمسافات زائدة؛ بينما يحتوي الـ API على GPA بقيمة `null`، وحضور `attendance` بقيمة `105`، ومعرّف غير متوافق `1099`. أما البيانات المعالجة فهي ما يخرج من الـ pipeline: الملف `final_dataset.csv` يحتوي 8 صفوف، صف واحد لكل طالب، بنصوص منظّفة وقيم معوَّضة وأعمدة مشتقة وعمود `source` — جاهزة للتحميل إلى التحليل أو النموذج دون أي إصلاح إضافي.
-
-### 3. What is the difference between Extract, Transform, and Load?
-
-الـ Extract يقرأ البيانات من المصادر دون تغييرها: الدالة `load_data()` تقرأ ملف CSV، والدالة `extract_api_data()` تنفّذ طلب HTTP، والدالة `extract_database()` تنفّذ استعلام الـ SQL JOIN. والـ Transform يحوّل السجلات المستخرجة إلى شكلها التحليلي: التنظيف، وتعويض القيم المفقودة، وتوحيد الأنواع، والأعمدة المشتقة مثل `performance_level`. أما الـ Load فيكتب النتيجة إلى وجهتها: الدالة `write_csv()` تحفظ السجلات الصالحة في `final_dataset.csv` والسجلات الفاشلة في `rejected_records.csv`. في هذا المشروع تغلّف الـ Validation مراحل التحويل وفق الترتيب الرسمي: Validate → Clean → Integrate → Transform → Final Validation → Load.
-
-### 4. What problems did you face while integrating the data?
-
-كان لكل مصدر شكل مختلف ومشاكل مختلفة لنفس الطالب: احتوى الـ API على معرّف (`1099`) غير موجود ضمن معرّفات CSV المرجعية، فكان لا بد من رفضه بوصفه غير متوافق؛ والطالب `1006` كان بلا تخصص (`major`)، والـ API كان بلا GPA للطالب `1002` وبلا `attendance` للطالب `1011`، وإلا لانتج الدمج قيم null دون سياسة تعويض واضحة؛ كما أن المعرّف الفارغ في CSV جعل pandas يتعامل مع عمود المعرّفات بالكامل كنوع float، ولذلك يعيد الـ snapshot النهائي توحيد المعرّفات إلى أعداد صحيحة. وكان أدق هذه المشاكل أن وسائط التعويض (medians) يجب أن تُحسب من مصدر الـ API الخام الكامل — فقد كان حسابها من المجموعة الفرعية بعد الـ validation يعطي قيمًا خاطئة (2.9/80 بدلًا من 3.0/85).
-
-### 5. How did you handle missing values?
-
-باستراتيجية صريحة واحدة لكل حقل، موثقة في `DATA_CONTRACT.md`: الـ `major` المفقود غياب تصنيفي طبيعي ويصبح `Unknown`؛ أما الـ GPA والـ `attendance` المفقودان فيُعوَّضان بوسيط (median) القيم الصالحة من مصدر الـ API الخام الكامل (3.0 و85) — واخترنا الوسيط لأنه مقاوم للقيم الشاذة المزروعة (GPA بقيمة 4.5 وattendance بقيمة 105) التي كان المتوسط الحسابي سيمتصها. أما الـ `student_id` المفقود فلا يُعوَّض أبدًا — فالصف بلا مفتاح يمكن الاعتماد عليه ولا يمكن الوثوق به، لذلك يُرفض بسبب `Missing student_id`. ولا يجري أي تعويض بصمت: يسجّل الـ transformer عدد القيم التي عبّأها.
-
-### 6. How did you handle duplicate records?
-
-يميّز الـ pipeline بين التكرار المطابق تمامًا والتكرار المتضارب. الصف الإضافي المطابق تمامًا لنفس `student_id` (وهو موجود في ملف CSV لدينا كتكرار للطالب `1007`) مشكلة قابلة للإصلاح: تزيله الدالة `clean_data` وتبقى نسخة واحدة، ويسجّل عدّاد التكرارات القيمة 1 للبيانات المرجعية. أما تكرار المعرّف ببيانات *مختلفة* فيُعامَل كمشكلة غير قابلة للإصلاح — يُرفض بدلًا من حله بصمت، لأن الـ pipeline لا يستطيع معرفة أي النسختين صحيحة. وتتم إزالة التكرارات عند مستوى التفصيل المطلوب في المهمة: صف واحد لكل `student_id`.
-
-### 7. How did you handle invalid records?
-
-لا تُحذف السجلات غير الصالحة بصمت أبدًا. كل سجل يمرّ عبر الـ source validation ثم الـ final validation وفق قواعد الجودة؛ وأي سجل يفشل يُكتب في `data/rejected/rejected_records.csv` مع `error_reason` صريح — مثل `Invalid Age` للطالب `1005`، و`Invalid GPA` للطالب `1004`، و`Incompatible student_id` للطالب `1099`، و`Missing student_id` للصف ذي المعرّف الفارغ. أما المشاكل القابلة للإصلاح (major مفقود، GPA/attendance مفقود، تكرار مطابق، مسافات زائدة) فيُصلَح قبل التقسيم النهائي، لذلك يحتوي ملف المرفوضات على السجلات الست غير القابلة للإصلاح بالضبط، ويظهر عدد المرفوضات في مقاييس كل تشغيل.
-
-### 8. Why should the extraction layer be separated from the transformation layer?
-
-لأن كلًا منهما يتغيّر لأسباب مختلفة ويجب أن يبقى قابلاً للاختبار وإعادة الاستخدام بشكل مستقل. في هذا المشروع كل وحدة من وحدات المصادر تقوم بالاستخراج فقط — بل إن قواعد الملكية تمنع وجود أي منطق تنظيف داخل وحدات المصادر — بينما يقع التنظيف والتعويض والأعمدة المشتقة في طبقة الـ transformation. هذا الفصل هو ما سمح للمصادر الثلاثة بتطبيق عقد واحد (`BaseSource.extract()`)، وبتغيّر سياق الـ transformation (وسائط الـ API الخام) دون تعديل أي ملف مصدر، و باختبار معالجة أخطاء الاستخراج (timeouts، JSON غير صالح، قواعد بيانات مقفلة) دون أي منطق تحويل. أما `main.py` فيركّب المراحل معًا، فيمكن إعادة ترتيبها من مكان واحد.
-
-### 9. Why is data validation an essential part of data engineering?
-
-لأن المستهلكين في المصب يفترضون أن البيانات موثوقة، والـ Data Validation هو ما يجعل هذا الافتراض حقيقةً بدلًا من كونه افتراضًا فقط. تحتوي البيانات المرجعية عمدًا على عمر `15` وGPA بقيمة `4.5` وattendance بقيمة `105` وscore بقيمة `105` — لا شيء منها كان سيسبب انهيار pipeline ساذج، لكنها كلها كانت ستُفسد بصمت أي متوسط أو نموذج أو تقرير يُبنى عليها. يحوّل الـ Data Validation هذا التلف الصامت إلى رفض صريح مسبَّب، ويحمي مفتاح الدمج المشترك `student_id` (المعرّفات المفقودة أو غير المتوافقة)، ويجعل الجودة قابلة للقياس: يبلّغ الـ pipeline في كل تشغيل عن عدد السجلات الصالحة مقابل المرفوضة بدلًا من الأمل في صحة الناتج.
-
-### 10. How can the pipeline be developed to run periodically and automatically?
-
-البنية جاهزة لذلك أصلًا: `main(config_path=...)` نقطة دخول واحدة، وكل المسارات تأتي من ملف الإعدادات، والتنفيذ idempotent (يعطي النتيجة نفسها عند تكراره). الخطوة المتبقية تشغيلية: جدولة `python main.py` عبر cron أو GitHub Actions أو Windows Task Scheduler، ومراقبة `logs/pipeline.log` ورمز الخروج لاكتشاف الإخفاقات. والمعالجة التزايدية (Incremental Processing) هي ما تجعل التشغيل المتكرر عمليًا — فالحالة المحفوظة تعني أن كل تشغيل مجدول يعيد معالجة الطلاب الجدد أو المتغيّرين فقط بدل مجموعة البيانات كاملة. أما النسخة الإنتاجية فستضيف تنبيهات عند الإخفاق ولقطات مخرجات موقّتة زمنيًا.
-
-### 11. How can the pipeline handle millions of records?
-
-التنفيذ الحالي بسيط عمدًا — pandas DataFrames في الذاكرة — وهو مناسب لمجموعة البيانات هذه لكنه لن يتوسّع كما هو. مسار التوسّع يحافظ على المراحل نفسها ويغيّر المحرّكات: الاستخراج على دفعات (chunks) أو دفع عملية الـ JOIN الثقيلة إلى قاعدة البيانات نفسها بلغة SQL؛ نقل البيانات إلى تخزين عمودي/مقسّم مثل Parquet؛ استبدال pandas داخل الذاكرة بمحرك out-of-core أو موزّع (DuckDB أو Polars أو Spark) ينفّذ خطوتي الـ validation والتنظيف على هيئة stream؛ والاعتماد على المعالجة التزايدية المنفَّذة فعلًا بحيث يلمس كل تشغيل السجلات المتغيّرة فقط. أما قواعد الـ validation نفسها فتبقى كما هي — تتحوّل إلى predicates تُنفَّذ داخل المحرك القابل للتوسّع.
-
-### 12. What is the difference between batch processing and streaming processing?
-
-الـ Batch Processing ينفّذ على مجموعة بيانات محدودة ومكتملة وينتج ناتجه مرة واحدة لكل تشغيل — وهذا بالضبط ما يفعله هذا الـ pipeline: كل تنفيذ يقرأ المصادر كاملة، ويقارنها بالحالة المحفوظة، وينتج snapshot جديدًا من `final_dataset.csv`. أما الـ Streaming Processing فيستهلك أحداثًا مستمرة غير محدودة ويحدّث النتائج باستمرار وبزمن استجابة منخفض — لا يوجد فيه مفهوم «انتهى التشغيل»، ويجب تطبيق قواعد الجودة نفسها سجلًا بسجل مع وصول الأحداث. الـ Batch هو النموذج الأنسب عندما تكون الصحة والبساطة أهم من الطزاجة (التقارير، ومجموعات بيانات التدريب مثل مجموعتنا)؛ بينما يناسب الـ Streaming لوحات المتابعة الحيّة والتنبيهات والميزات الفورية.
+The original data contract and project plan remain in `DATA_CONTRACT.md` and
+`PROJECT_PLAN.md`; the extension contract is appended to `DATA_CONTRACT.md`.

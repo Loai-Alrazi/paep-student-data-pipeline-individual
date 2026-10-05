@@ -9,11 +9,33 @@
     },
     "database": {
       "path": "database/students.db"
+    },
+    "mongodb": {
+      "enabled": true,
+      "uri": "mongodb://localhost:27017",
+      "uri_env": "MONGODB_URI",
+      "database": "paep_student_pipeline",
+      "collection": "student_profiles",
+      "server_selection_timeout_ms": 5000
+    },
+    "web": {
+      "enabled": true,
+      "url": "https://jsonplaceholder.typicode.com/users",
+      "timeout_seconds": 10,
+      "student_id_offset": 1000
     }
   },
   "output": {
     "processed": "data/processed/final_dataset.csv",
-    "rejected": "data/rejected/rejected_records.csv"
+    "rejected": "data/rejected/rejected_records.csv",
+    "mongodb": {
+      "enabled": true,
+      "uri": "mongodb://localhost:27017",
+      "uri_env": "MONGODB_URI",
+      "database": "paep_student_pipeline",
+      "collection": "final_students",
+      "server_selection_timeout_ms": 5000
+    }
   },
   "logging": {
     "path": "logs/pipeline.log"

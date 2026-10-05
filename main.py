@@ -16,11 +16,18 @@ from pathlib import Path
 import pandas as pd
 
 from app.output.csv_writer import write_csv
+from app.output.mongodb_writer import write_mongodb
 from app.sources.api_source import extract_api_data
 from app.sources.csv_source import load_data
 from app.sources.database_source import extract_database
+from app.sources.mongodb_source import extract_mongodb_data
+from app.sources.web_api_source import extract_web_data
 from app.transformation.cleaner import clean_data
-from app.transformation.integration import OUTPUT_COLUMNS, integrate_data
+from app.transformation.integration import (
+	OUTPUT_COLUMNS,
+	enrich_with_optional_sources,
+	integrate_data,
+)
 from app.transformation.transformer import (
 	calculate_imputation_stats,
 	transform_data,
@@ -41,11 +48,12 @@ from app.utils.metrics import (
 )
 from app.validation.quality import validate_final_data, validate_source_data
 
-FINAL_COLUMNS = OUTPUT_COLUMNS + [
+FINAL_SUFFIX_COLUMNS = [
 	"performance_level",
 	"attendance_status",
 	"source",
 ]
+FINAL_COLUMNS = OUTPUT_COLUMNS + FINAL_SUFFIX_COLUMNS
 
 
 def main(config_path: str | Path | None = None) -> None:
@@ -70,6 +78,23 @@ def main(config_path: str | Path | None = None) -> None:
 		)
 
 		raw_api_stats = calculate_imputation_stats(api_raw)
+		canonical_ids = _derive_canonical_ids(csv_raw)
+
+		supplemental_raw: dict[str, pd.DataFrame] = {}
+		lineage_sources = ["CSV", "API", "DATABASE"]
+		mongodb_config = config.get("sources", {}).get("mongodb", {})
+		if mongodb_config.get("enabled", False):
+			mongodb_raw = extract_mongodb_data(mongodb_config)
+			supplemental_raw["MONGODB"] = mongodb_raw
+			lineage_sources.append("MONGODB")
+			logger.info("MongoDB source extracted: %d records.", len(mongodb_raw))
+
+		web_config = config.get("sources", {}).get("web", {})
+		if web_config.get("enabled", False):
+			web_raw = extract_web_data(web_config)
+			supplemental_raw["WEB"] = web_raw
+			lineage_sources.append("WEB")
+			logger.info("Web source extracted: %d records.", len(web_raw))
 
 		metrics.update_source_counts(
 			csv_records=len(csv_raw),
@@ -81,9 +106,8 @@ def main(config_path: str | Path | None = None) -> None:
 			count_missing_values(csv_raw)
 			+ count_missing_values(api_raw)
 			+ count_missing_values(database_raw)
+			+ sum(count_missing_values(data) for data in supplemental_raw.values())
 		)
-
-		canonical_ids = _derive_canonical_ids(csv_raw)
 
 		csv_valid, csv_rejected = validate_source_data(csv_raw, "CSV")
 		api_valid, api_rejected = validate_source_data(
@@ -92,10 +116,16 @@ def main(config_path: str | Path | None = None) -> None:
 		database_valid, database_rejected = validate_source_data(
 			database_raw, "DATABASE", canonical_ids=canonical_ids
 		)
-		rejections = pd.concat(
-			[csv_rejected, api_rejected, database_rejected],
-			ignore_index=True,
-		)
+		supplemental_valid: dict[str, pd.DataFrame] = {}
+		source_rejections = [csv_rejected, api_rejected, database_rejected]
+		for source_name, raw_data in supplemental_raw.items():
+			valid_data, rejected_data = validate_source_data(
+				raw_data, source_name, canonical_ids=canonical_ids
+			)
+			supplemental_valid[source_name] = valid_data
+			source_rejections.append(rejected_data)
+
+		rejections = pd.concat(source_rejections, ignore_index=True)
 		logger.info(
 			"Source validation completed: %d rejected records collected.",
 			len(rejections),
@@ -104,9 +134,13 @@ def main(config_path: str | Path | None = None) -> None:
 		csv_clean = clean_data(csv_valid)
 		api_clean = clean_data(api_valid)
 		database_clean = clean_data(database_valid)
+		supplemental_clean = {
+			name: clean_data(data) for name, data in supplemental_valid.items()
+		}
 		logger.info("Cleaning completed.")
 
 		integrated = integrate_data(csv_clean, api_clean, database_clean)
+		integrated = enrich_with_optional_sources(integrated, supplemental_clean)
 		metrics.integrated_records = len(integrated)
 		logger.info("Integration completed: %d integrated records.", len(integrated))
 
@@ -127,7 +161,9 @@ def main(config_path: str | Path | None = None) -> None:
 			imputation_stats=raw_api_stats,
 			logger=logger,
 		)
-		transformed_new = add_lineage(transformed_new)
+		transformed_new = add_lineage(
+			transformed_new, source="|".join(lineage_sources)
+		)
 		logger.info("Transformation completed.")
 
 		valid_new, final_rejected = validate_final_data(transformed_new)
@@ -176,6 +212,15 @@ def main(config_path: str | Path | None = None) -> None:
 					)
 				raise
 			logger.info("Incremental state saved.")
+
+		mongodb_output = config.get("output", {}).get("mongodb", {})
+		if mongodb_output.get("enabled", False):
+			write_mongodb(final_data, mongodb_output)
+			logger.info(
+				"Final dataset loaded to MongoDB collection %s.%s.",
+				mongodb_output["database"],
+				mongodb_output["collection"],
+			)
 
 		metrics.record_processing_time(time.perf_counter() - started)
 		logger.info(metrics.summary())
@@ -253,7 +298,11 @@ def _apply_incremental_policy(
 		return new_or_changed, unchanged, integrated.iloc[0:0]
 
 	reused = _load_reusable_rows(
-		Path(config["output"]["processed"]), unchanged
+		Path(config["output"]["processed"]),
+		unchanged,
+		required_columns=_final_columns_for(
+			list(integrated.columns) + FINAL_SUFFIX_COLUMNS
+		),
 	)
 	if reused is None:
 		logger.warning(
@@ -266,7 +315,9 @@ def _apply_incremental_policy(
 
 
 def _load_reusable_rows(
-	previous_path: Path, unchanged: pd.DataFrame
+	previous_path: Path,
+	unchanged: pd.DataFrame,
+	required_columns: list[str] | None = None,
 ) -> pd.DataFrame | None:
 	"""Return previous final rows for the unchanged IDs, or None if unusable.
 
@@ -284,7 +335,9 @@ def _load_reusable_rows(
 		previous_final = pd.read_csv(previous_path)
 	except (OSError, ValueError):
 		return None
-	if not set(FINAL_COLUMNS).issubset(previous_final.columns):
+	if required_columns is None:
+		required_columns = FINAL_COLUMNS
+	if not set(required_columns).issubset(previous_final.columns):
 		return None
 
 	previous_ids = _normalize_integer_student_ids(previous_final["student_id"])
@@ -340,8 +393,23 @@ def _finalize_snapshot(final_data: pd.DataFrame) -> pd.DataFrame:
 		raise ValueError("Final snapshot contains duplicate student_id values.")
 	ordered = final_data.sort_values("student_id", kind="mergesort")
 	ordered["student_id"] = ids
-	columns = [column for column in FINAL_COLUMNS if column in ordered]
+	columns = _final_columns_for(ordered.columns)
 	return ordered.loc[:, columns].reset_index(drop=True)
+
+
+def _final_columns_for(columns: object) -> list[str]:
+	"""Return deterministic core, supplemental, then derived output columns."""
+	available = list(columns)
+	supplemental = [
+		column
+		for column in available
+		if column not in OUTPUT_COLUMNS and column not in FINAL_SUFFIX_COLUMNS
+	]
+	return [
+		column
+		for column in OUTPUT_COLUMNS + supplemental + FINAL_SUFFIX_COLUMNS
+		if column in available
+	]
 
 
 def _read_file_snapshot(path: Path) -> bytes | None:

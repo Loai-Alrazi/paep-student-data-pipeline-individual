@@ -120,3 +120,28 @@ def test_invalid_required_values(tmp_path, config_data, dotted_key, value):
     with pytest.raises(ValueError) as error:
         load_config(path)
     assert dotted_key in str(error.value)
+
+
+@pytest.mark.parametrize(
+    "section_path,key,value",
+    [
+        ("sources.web", "enabled", "yes"),
+        ("sources.web", "timeout_seconds", 0),
+        ("sources.web", "student_id_offset", 1.5),
+        ("sources.mongodb", "database", ""),
+        ("sources.mongodb", "server_selection_timeout_ms", True),
+        ("output.mongodb", "collection", None),
+    ],
+)
+def test_invalid_optional_extension_values_are_rejected(
+    tmp_path, config_data, section_path, key, value
+):
+    section = config_data
+    for part in section_path.split("."):
+        section = section[part]
+    section[key] = value
+    path = tmp_path / "invalid_extension.json"
+    path.write_text(json.dumps(config_data), encoding="utf-8")
+
+    with pytest.raises(ValueError):
+        load_config(path)

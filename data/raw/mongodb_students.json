@@ -1,0 +1,14 @@
+[
+  {"student_id": 1001, "advisor_name": "Maha Saleh", "scholarship_status": "Full"},
+  {"student_id": 1002, "advisor_name": "Maha Saleh", "scholarship_status": "Partial"},
+  {"student_id": 1003, "advisor_name": "Omar Nasser", "scholarship_status": "None"},
+  {"student_id": 1004, "advisor_name": "Omar Nasser", "scholarship_status": "Full"},
+  {"student_id": 1005, "advisor_name": "Lina Ahmed", "scholarship_status": "None"},
+  {"student_id": 1006, "advisor_name": "Lina Ahmed", "scholarship_status": "Partial"},
+  {"student_id": 1007, "advisor_name": "Maha Saleh", "scholarship_status": "Full"},
+  {"student_id": 1008, "advisor_name": "Omar Nasser", "scholarship_status": "None"},
+  {"student_id": 1009, "advisor_name": "Lina Ahmed", "scholarship_status": "Partial"},
+  {"student_id": 1010, "advisor_name": "Maha Saleh", "scholarship_status": "None"},
+  {"student_id": 1011, "advisor_name": "Omar Nasser", "scholarship_status": "Full"},
+  {"student_id": 1012, "advisor_name": "Lina Ahmed", "scholarship_status": "Partial"}
+]
