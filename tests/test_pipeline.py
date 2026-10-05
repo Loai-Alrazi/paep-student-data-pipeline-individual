@@ -576,7 +576,7 @@ def test_raw_source_files_are_not_modified_by_pipeline(pipeline_env):
 		assert digest(path) == expected
 
 
-def test_optional_mongodb_and_web_sources_enrich_and_load_one_dataset(
+def test_mongodb_enriches_students_and_web_scraping_stays_independent(
 	pipeline_env, monkeypatch
 ):
 	config_path = pipeline_env.make_config(incremental_enabled=False)
@@ -587,12 +587,14 @@ def test_optional_mongodb_and_web_sources_enrich_and_load_one_dataset(
 		"database": "students",
 		"collection": "profiles",
 	}
-	config["sources"]["web"] = {
+	config["sources"]["web_scraping"] = {
 		"enabled": True,
-		"url": "https://example.test/users",
+		"url": "https://example.test/quotes",
 		"timeout_seconds": 2,
-		"student_id_offset": 1000,
 	}
+	config["output"]["scraped_quotes"] = str(
+		pipeline_env.paths.processed.parent / "scraped_quotes.csv"
+	)
 	config["output"]["mongodb"] = {
 		"enabled": True,
 		"uri": "mongodb://example:27017",
@@ -610,14 +612,15 @@ def test_optional_mongodb_and_web_sources_enrich_and_load_one_dataset(
 	)
 	web = pd.DataFrame(
 		{
-			"student_id": list(range(1001, 1011)),
-			"web_name": [f"Web User {number}" for number in range(1, 11)],
-			"web_email": [f"user{number}@example.test" for number in range(1, 11)],
+			"quote_text": ["  Data   matters.  "],
+			"author": ["Test Author"],
+			"tags": ["data|learning"],
+			"source_url": ["https://example.test/quotes"],
 		}
 	)
 	written = []
 	monkeypatch.setattr(main_module, "extract_mongodb_data", lambda _: mongodb)
-	monkeypatch.setattr(main_module, "extract_web_data", lambda _: web)
+	monkeypatch.setattr(main_module, "extract_web_scraping_data", lambda _: web)
 	monkeypatch.setattr(
 		main_module,
 		"write_mongodb",
@@ -628,10 +631,12 @@ def test_optional_mongodb_and_web_sources_enrich_and_load_one_dataset(
 
 	final = _read_final(pipeline_env.paths)
 	assert final["student_id"].tolist() == EXPECTED_VALID_IDS
-	assert {"advisor_name", "scholarship_status", "web_name", "web_email"}.issubset(
-		final.columns
-	)
-	assert final["source"].eq("CSV|API|DATABASE|MONGODB|WEB").all()
-	assert pd.isna(final.set_index("student_id").loc[1011, "web_email"])
+	assert {"advisor_name", "scholarship_status"}.issubset(final.columns)
+	assert not any(column.startswith("web_") for column in final.columns)
+	assert final["source"].eq("CSV|API|DATABASE|MONGODB").all()
+
+	scraped = pd.read_csv(config["output"]["scraped_quotes"])
+	assert scraped.iloc[0]["quote_text"] == "Data matters."
+	assert scraped.iloc[0]["tag_count"] == 2
 	assert len(written) == 1
 	pd.testing.assert_frame_equal(written[0], final, check_dtype=False)

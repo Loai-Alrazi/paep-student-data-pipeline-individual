@@ -45,7 +45,8 @@ class FakeClient:
         self.closed = True
 
 
-def test_mongodb_source_implements_contract_and_extracts_sorted_records():
+def test_mongodb_source_implements_contract_and_extracts_sorted_records(monkeypatch):
+    monkeypatch.delenv("MONGODB_URI", raising=False)
     client = FakeClient(
         [
             {"student_id": 1002, "advisor_name": "B", "scholarship_status": "None"},
@@ -70,9 +71,8 @@ def test_mongodb_source_implements_contract_and_extracts_sorted_records():
 
 
 def test_mongodb_uri_can_come_from_environment(monkeypatch):
-    monkeypatch.setenv("CUSTOM_MONGODB_URI", "mongodb://secret-host:27017")
-    config = {**CONFIG, "uri_env": "CUSTOM_MONGODB_URI"}
-    source = MongoDBSource(config, client_factory=lambda *_: FakeClient([]))
+    monkeypatch.setenv("MONGODB_URI", "mongodb://secret-host:27017")
+    source = MongoDBSource(CONFIG, client_factory=lambda *_: FakeClient([]))
     assert source.uri == "mongodb://secret-host:27017"
 
 

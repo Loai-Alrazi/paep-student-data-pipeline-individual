@@ -14,6 +14,7 @@ PATH_KEYS = (
     "sources.database.path",
     "output.processed",
     "output.rejected",
+    "output.scraped_quotes",
     "logging.path",
     "incremental.state_path",
 )
@@ -125,9 +126,9 @@ def test_invalid_required_values(tmp_path, config_data, dotted_key, value):
 @pytest.mark.parametrize(
     "section_path,key,value",
     [
-        ("sources.web", "enabled", "yes"),
-        ("sources.web", "timeout_seconds", 0),
-        ("sources.web", "student_id_offset", 1.5),
+        ("sources.web_scraping", "enabled", "yes"),
+        ("sources.web_scraping", "timeout_seconds", 0),
+        ("sources.web_scraping", "url", ""),
         ("sources.mongodb", "database", ""),
         ("sources.mongodb", "server_selection_timeout_ms", True),
         ("output.mongodb", "collection", None),
@@ -144,4 +145,17 @@ def test_invalid_optional_extension_values_are_rejected(
     path.write_text(json.dumps(config_data), encoding="utf-8")
 
     with pytest.raises(ValueError):
+        load_config(path)
+
+
+def test_mongodb_source_and_output_collections_must_be_different(
+    tmp_path, config_data
+):
+    config_data["output"]["mongodb"]["collection"] = config_data["sources"][
+        "mongodb"
+    ]["collection"]
+    path = tmp_path / "same_collection.json"
+    path.write_text(json.dumps(config_data), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="must use different collections"):
         load_config(path)

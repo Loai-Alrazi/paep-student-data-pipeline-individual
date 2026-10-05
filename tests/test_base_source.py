@@ -13,7 +13,7 @@ from app.sources.base_source import BaseSource
 from app.sources.csv_source import CSVSource, load_data
 from app.sources.database_source import DatabaseSource, extract_database
 from app.sources.mongodb_source import MongoDBSource
-from app.sources.web_api_source import WebAPISource
+from app.sources.web_scraping_source import WebScrapingSource
 
 
 def test_base_source_cannot_be_instantiated():
@@ -30,7 +30,8 @@ def test_subclass_without_extract_is_still_abstract():
 
 
 @pytest.mark.parametrize(
-    "source_cls", [CSVSource, APISource, DatabaseSource, MongoDBSource, WebAPISource]
+    "source_cls",
+    [CSVSource, APISource, DatabaseSource, MongoDBSource, WebScrapingSource],
 )
 def test_concrete_sources_implement_base_source(source_cls):
     assert issubclass(source_cls, BaseSource)

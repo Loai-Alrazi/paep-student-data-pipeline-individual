@@ -199,18 +199,19 @@ def test_unmatched_ids_are_excluded_from_integrated_output() -> None:
 def test_supplemental_sources_enrich_without_dropping_unmatched_core_rows() -> None:
     core = integrate_data(make_csv_data(), make_api_data(), make_database_data())
     mongodb = pd.DataFrame(
-        {"student_id": [1001, 1002], "advisor_name": ["Maha", "Omar"]}
-    )
-    web = pd.DataFrame(
-        {"student_id": [1001], "web_email": ["student@example.test"]}
+        {
+            "student_id": [1001, 1002],
+            "advisor_name": ["Maha", "Omar"],
+            "scholarship_status": ["Full", "None"],
+        }
     )
 
-    result = enrich_with_optional_sources(core, {"MONGODB": mongodb, "WEB": web})
+    result = enrich_with_optional_sources(core, {"MONGODB": mongodb})
 
     assert result["student_id"].tolist() == [1001, 1002, 1003]
     assert result.set_index("student_id").loc[1001, "advisor_name"] == "Maha"
     assert pd.isna(result.set_index("student_id").loc[1003, "advisor_name"])
-    assert pd.isna(result.set_index("student_id").loc[1002, "web_email"])
+    assert pd.isna(result.set_index("student_id").loc[1003, "scholarship_status"])
 
 
 def test_supplemental_source_cannot_overwrite_core_column() -> None:
@@ -218,4 +219,4 @@ def test_supplemental_source_cannot_overwrite_core_column() -> None:
     conflicting = pd.DataFrame({"student_id": [1001], "city": ["Other"]})
 
     with pytest.raises(DataIntegrationError, match="overwrite.*city"):
-        enrich_with_optional_sources(core, {"WEB": conflicting})
+        enrich_with_optional_sources(core, {"MONGODB": conflicting})

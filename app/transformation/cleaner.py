@@ -11,9 +11,6 @@ TITLE_CASE_COLUMNS = {
 	"course_name",
 	"advisor_name",
 	"scholarship_status",
-	"web_name",
-	"web_city",
-	"company_name",
 }
 
 

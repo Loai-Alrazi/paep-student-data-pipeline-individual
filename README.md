@@ -1,121 +1,122 @@
-# PAEP Student Data Pipeline — Final
+# PAEP Student Data Pipeline - Individual Extension
 
-An extended multi-source ETL pipeline for the PAEP Data Engineering course.
-It starts from the latest clean `main` of the original project and adds:
+This repository is an individual extension of the original PAEP team project.
+It preserves the team project's Git history and adds MongoDB input/output and
+real HTML web scraping without changing the original repository.
 
-- MongoDB as a supplemental input source.
-- [JSONPlaceholder `/users`](https://jsonplaceholder.typicode.com/users) as a
-  simple public web API source.
-- One consolidated output collection in MongoDB, while retaining CSV outputs
-  for easy inspection and rejected-record auditing.
+## Project Origin
 
-The original repository is not modified by this project. Its history is kept as
-the read-only `upstream` remote; push to that remote is disabled.
+This project is built on the team repository `paep-student-data-pipeline`.
+The original team history is preserved in this repository; commit `e39354c`
+remains an ancestor of the current branch. The configured `upstream` remote is
+read-only for this work and its push URL is disabled.
 
-## Pipeline flow
+The team baseline already provided:
+
+- CSV student identity data.
+- A local REST API with academic data.
+- SQLite enrollment data.
+- Source validation, cleaning, integration, transformation, lineage, metrics,
+  rejected-record output, and incremental processing.
+- The canonical CSV output at `data/processed/final_dataset.csv`.
+
+The individual extension adds:
+
+- MongoDB collection `student_profiles` as an optional student enrichment
+  source.
+- A real Web Scraping source using `requests` and `BeautifulSoup` against the
+  educational site `https://quotes.toscrape.com/`.
+- MongoDB collection `final_students` as a destination for the complete final
+  student snapshot.
+- Docker Compose setup, a reproducible MongoDB seed, and isolated tests for the
+  new behavior.
+
+## Sources and Outputs
+
+| Component | Role | Relationship |
+| --- | --- | --- |
+| CSV | Student identity and demographics | Core student source |
+| Local REST API | GPA, attendance, and status | Core join on `student_id` |
+| SQLite | Courses and enrollments | Core join on `student_id` |
+| MongoDB `student_profiles` | Advisor and scholarship fields | Optional LEFT JOIN on `student_id` |
+| Quotes to Scrape HTML | Quotes, authors, and tags | Independent scraped dataset |
+
+JSONPlaceholder is not used. It was removed because it is a REST API rather
+than Web Scraping, and mapping its IDs to student IDs would not represent a
+real relationship.
+
+The project writes:
+
+- `data/processed/final_dataset.csv`: the unified student dataset.
+- `paep_student_pipeline.final_students`: the same student snapshot in
+  MongoDB.
+- `data/processed/scraped_quotes.csv`: the independent Web Scraping result.
+- `data/rejected/rejected_records.csv`: rejected student-source records.
+
+## Architecture and Data Flow
 
 ```text
+Student pipeline
+
 CSV -----------+
-Academic API --+--> validate --> clean --> core inner join ----+
-SQLite --------+                                             |
-                                                             +--> transform
-MongoDB -------+--> validate --> clean --> optional left join |    + validate
-Web API -------+--> normalize --> validate --> clean ---------+         |
-                                                                       +--> CSV
-                                                                       +--> MongoDB
+REST API ------+--> Validate --> Clean --> INNER JOIN --+
+SQLite --------+                                        |
+                                                        +--> Transform
+MongoDB -------------> Validate --> Clean --> LEFT JOIN |    --> Validate
+                                                             --> CSV
+                                                             --> MongoDB
+
+Independent Web Scraping pipeline
+
+HTML page --> requests --> BeautifulSoup --> Validate --> Clean
+          --> Transform --> scraped_quotes.csv
 ```
 
-The three academic sources remain mandatory and use the original one-to-one
-inner join. MongoDB and the public web API are compatible after normalization,
-so they reuse the same validation and cleaning pipeline. They are left-joined
-as enrichment sources: a missing optional profile never removes an otherwise
-valid academic student.
+The student pipeline only integrates sources with a real `student_id`
+relationship. The MongoDB LEFT JOIN cannot remove a valid core student when a
+profile is absent. Scraped quotes have no natural student key, so they are
+processed separately and never receive an invented mapping.
 
-## Sources
+All extractors implement the small `BaseSource.extract() -> DataFrame`
+contract. The orchestration remains synchronous and intentionally simple for
+an academic demonstration.
 
-| Source | Purpose | Key fields | Expected rows |
-| --- | --- | --- | ---: |
-| CSV | Identity | `student_id`, name, age, major, city | 14 raw |
-| Local REST API | Academic status | `student_id`, GPA, attendance, status | 13 raw |
-| SQLite | Enrollment | `student_id`, course, score | 12 joined |
-| MongoDB | Student profile | `student_id`, advisor, scholarship | 12 seeded |
-| JSONPlaceholder | Web-directory demo | normalized `student_id`, `web_*`, company | 10 |
+## MongoDB Design
 
-JSONPlaceholder IDs `1..10` are mapped to student IDs `1001..1010` using the
-configurable `student_id_offset=1000`. Its schema does not pretend to be an
-academic schema: it has a small adapter that produces namespaced `web_*`
-columns. This is intentionally a JSON web API rather than brittle HTML scraping,
-matching the requested low-complexity learning example.
+MongoDB has two separate responsibilities and collections:
 
-## Final dataset
+- Input: `paep_student_pipeline.student_profiles`
+- Output: `paep_student_pipeline.final_students`
 
-The canonical run still produces 8 valid academic students and 6 rejected
-records. With both enrichments enabled, the final dataset has 24 columns:
+The source fixture is tracked at `data/raw/mongodb_students.json` and seeded by
+`scripts/seed_mongodb.py`. The final writer replaces the destination snapshot
+on every run, creates a unique `student_id` index, and rejects duplicate IDs
+before connecting. Repeated runs therefore do not retain old documents.
 
-- 12 original academic columns.
-- MongoDB: `advisor_name`, `scholarship_status`.
-- Web API: `web_name`, `web_username`, `web_email`, `web_phone`,
-  `web_website`, `web_city`, `company_name`.
-- Derived/metadata: `performance_level`, `attendance_status`, `source`.
+`MONGODB_URI` can override the local default. No credentials are stored in the
+repository. Configuration validation also rejects using the same collection
+for both input and output.
 
-Students `1011` and `1012` have null `web_*` fields because the demonstration
-API has only ten users. They remain in the dataset by design. The same final
-snapshot is written to:
+## Web Scraping Design
 
-- `data/processed/final_dataset.csv`
-- MongoDB collection `paep_student_pipeline.final_students`
+`app/sources/web_scraping_source.py` performs a real HTTP GET and parses
+`div.quote`, `span.text`, `small.author`, and `a.tag` HTML elements with
+BeautifulSoup. It does not use Selenium, authentication, protection bypasses,
+or hidden APIs.
 
-Rejected source records remain in `data/rejected/rejected_records.csv` with an
-explicit source, stage, and reason.
+The independent dataset follows these stages:
 
-## Quick start
+1. Extract quote text, author, tags, and source URL from HTML.
+2. Validate its schema and required text values.
+3. Clean whitespace and remove repeated quote/author pairs.
+4. Transform it by adding `tag_count` and `quote_length`.
 
-Requirements: Python 3.12+ and either Docker or an existing MongoDB instance.
-
-1. Install dependencies:
-
-   ```bash
-   python -m pip install -r requirements.txt
-   ```
-
-2. Start MongoDB and seed the input collection:
-
-   ```bash
-   docker compose up -d mongodb
-   python scripts/seed_mongodb.py
-   ```
-
-3. Start the existing academic mock API in one terminal:
-
-   ```bash
-   python mock_api/server.py
-   ```
-
-4. Run the pipeline in another terminal:
-
-   ```bash
-   python main.py
-   ```
-
-5. Inspect the single MongoDB dataset:
-
-   ```bash
-   mongosh "mongodb://localhost:27017/paep_student_pipeline" \
-     --eval "db.final_students.find().sort({student_id: 1}).pretty()"
-   ```
-
-6. Run the offline test suite:
-
-   ```bash
-   python -m pytest -q
-   ```
-
-The tests use local HTTP fixtures and in-memory fakes for MongoDB, so they do
-not need internet access or a running MongoDB server.
+Tests use local HTML strings and request mocks, so the automated suite does not
+depend on the public website.
 
 ## Configuration
 
-All extensions are controlled in `config.json`:
+The extension settings in `config.json` are:
 
 ```json
 {
@@ -127,14 +128,14 @@ All extensions are controlled in `config.json`:
       "database": "paep_student_pipeline",
       "collection": "student_profiles"
     },
-    "web": {
+    "web_scraping": {
       "enabled": true,
-      "url": "https://jsonplaceholder.typicode.com/users",
-      "timeout_seconds": 10,
-      "student_id_offset": 1000
+      "url": "https://quotes.toscrape.com/",
+      "timeout_seconds": 10
     }
   },
   "output": {
+    "scraped_quotes": "data/processed/scraped_quotes.csv",
     "mongodb": {
       "enabled": true,
       "uri": "mongodb://localhost:27017",
@@ -146,48 +147,77 @@ All extensions are controlled in `config.json`:
 }
 ```
 
-Set `MONGODB_URI` to override the URI without committing credentials. Each new
-section is optional for backward compatibility: configurations from the
-original project still run the original CSV/API/SQLite-to-CSV flow.
+Optional extension sections can be disabled for an offline baseline run. When
+Web Scraping is enabled, the pipeline needs internet access for the configured
+HTML page. The core REST API remains local.
 
-## Design decisions
+## Running the Project
 
-- All five input classes implement `BaseSource.extract() -> DataFrame`.
-- MongoDB and web records pass through the existing source validation and
-  cleaning functions after source-specific extraction/normalization.
-- Supplemental fields are namespaced or checked for collisions, so a source
-  cannot silently overwrite a core academic field.
-- Duplicate supplemental IDs and incompatible IDs are rejected before merging.
-- Supplemental values are included in incremental fingerprints. Changing an
-  advisor, scholarship, email, or company reprocesses that student.
-- The MongoDB destination is replaced with the complete validated snapshot on
-  each successful run and has a unique index on `student_id`, preventing stale
-  documents from surviving.
-- CSV/state consistency from the original incremental pipeline is preserved.
-  MongoDB loading happens after the state is committed, so an unavailable
-  destination can be retried on the next unchanged run without corrupting the
-  reusable snapshot.
+Requirements: Python 3.12+, Docker Desktop (or another MongoDB instance), and
+internet access for the one-page scraping example.
 
-## Project structure
+1. Install dependencies:
+
+   ```bash
+   python -m pip install -r requirements.txt
+   ```
+
+2. Start MongoDB and seed its source collection:
+
+   ```bash
+   docker compose up -d mongodb
+   python scripts/seed_mongodb.py
+   ```
+
+3. Start the existing academic API in one terminal:
+
+   ```bash
+   python mock_api/server.py
+   ```
+
+4. Run the pipeline in another terminal:
+
+   ```bash
+   python main.py
+   ```
+
+5. Inspect MongoDB:
+
+   ```bash
+   mongosh "mongodb://localhost:27017/paep_student_pipeline" --eval "db.student_profiles.countDocuments(); db.final_students.countDocuments(); db.final_students.find().sort({student_id: 1}).pretty()"
+   ```
+
+6. Run the test suite:
+
+   ```bash
+   python -m pytest -q
+   ```
+
+The automated tests mock MongoDB and public HTTP access. A real end-to-end
+MongoDB check additionally requires a running Docker Engine.
+
+## Project Structure
 
 ```text
 app/
   sources/
-    mongodb_source.py       # MongoDB input adapter
-    web_api_source.py       # JSONPlaceholder normalization adapter
-  output/
-    mongodb_writer.py       # complete final collection loader
+    csv_source.py
+    api_source.py
+    database_source.py
+    mongodb_source.py
+    web_scraping_source.py
   transformation/
-    integration.py          # original core join + optional enrichment join
-data/raw/
-  mongodb_students.json     # reproducible MongoDB source seed
-scripts/
-  seed_mongodb.py
+    integration.py
+    web_scraping.py
+  output/
+    csv_writer.py
+    mongodb_writer.py
+data/raw/mongodb_students.json
+scripts/seed_mongodb.py
 compose.yaml
 config.json
 main.py
 tests/
 ```
 
-The original data contract and project plan remain in `DATA_CONTRACT.md` and
-`PROJECT_PLAN.md`; the extension contract is appended to `DATA_CONTRACT.md`.
+See `DATA_CONTRACT.md` for the exact schemas and validation rules.

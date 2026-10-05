@@ -79,8 +79,8 @@ def enrich_with_optional_sources(
 
     Supplemental sources must contain one row per ``student_id`` and may not
     overwrite columns already supplied by the core CSV/API/SQLite integration.
-    A left join is deliberate: a small teaching API such as JSONPlaceholder
-    should enrich matching students, not decide which academic rows survive.
+    A left join is deliberate: optional profile data should enrich matching
+    students, not decide which academic rows survive.
     """
     enriched = core_data.copy(deep=True)
     _ensure_unique_student_ids(enriched, "core")

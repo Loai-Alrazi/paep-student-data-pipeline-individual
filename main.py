@@ -21,7 +21,7 @@ from app.sources.api_source import extract_api_data
 from app.sources.csv_source import load_data
 from app.sources.database_source import extract_database
 from app.sources.mongodb_source import extract_mongodb_data
-from app.sources.web_api_source import extract_web_data
+from app.sources.web_scraping_source import extract_web_scraping_data
 from app.transformation.cleaner import clean_data
 from app.transformation.integration import (
 	OUTPUT_COLUMNS,
@@ -31,6 +31,11 @@ from app.transformation.integration import (
 from app.transformation.transformer import (
 	calculate_imputation_stats,
 	transform_data,
+)
+from app.transformation.web_scraping import (
+	clean_scraped_quotes,
+	transform_scraped_quotes,
+	validate_scraped_quotes,
 )
 from app.utils.config_loader import load_config
 from app.utils.incremental import (
@@ -89,12 +94,17 @@ def main(config_path: str | Path | None = None) -> None:
 			lineage_sources.append("MONGODB")
 			logger.info("MongoDB source extracted: %d records.", len(mongodb_raw))
 
-		web_config = config.get("sources", {}).get("web", {})
+		web_config = config.get("sources", {}).get("web_scraping", {})
 		if web_config.get("enabled", False):
-			web_raw = extract_web_data(web_config)
-			supplemental_raw["WEB"] = web_raw
-			lineage_sources.append("WEB")
-			logger.info("Web source extracted: %d records.", len(web_raw))
+			scraped_raw = extract_web_scraping_data(web_config)
+			scraped_valid = validate_scraped_quotes(scraped_raw)
+			scraped_clean = clean_scraped_quotes(scraped_valid)
+			scraped_final = transform_scraped_quotes(scraped_clean)
+			write_csv(scraped_final, config["output"]["scraped_quotes"])
+			logger.info(
+				"Web scraping pipeline completed: %d quote records written.",
+				len(scraped_final),
+			)
 
 		metrics.update_source_counts(
 			csv_records=len(csv_raw),

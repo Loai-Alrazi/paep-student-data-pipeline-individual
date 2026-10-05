@@ -1,4 +1,4 @@
-"""Shared interface for the CSV, HTTP API, and SQLite sources."""
+"""Shared extraction interface for the pipeline's tabular data sources."""
 
 from abc import ABC, abstractmethod
 

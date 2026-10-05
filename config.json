@@ -18,16 +18,16 @@
       "collection": "student_profiles",
       "server_selection_timeout_ms": 5000
     },
-    "web": {
+    "web_scraping": {
       "enabled": true,
-      "url": "https://jsonplaceholder.typicode.com/users",
-      "timeout_seconds": 10,
-      "student_id_offset": 1000
+      "url": "https://quotes.toscrape.com/",
+      "timeout_seconds": 10
     }
   },
   "output": {
     "processed": "data/processed/final_dataset.csv",
     "rejected": "data/rejected/rejected_records.csv",
+    "scraped_quotes": "data/processed/scraped_quotes.csv",
     "mongodb": {
       "enabled": true,
       "uri": "mongodb://localhost:27017",

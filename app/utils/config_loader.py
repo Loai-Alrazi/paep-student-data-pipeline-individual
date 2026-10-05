@@ -15,6 +15,8 @@ _PATH_KEYS = (
     "incremental.state_path",
 )
 
+_OPTIONAL_PATH_KEYS = ("output.scraped_quotes",)
+
 
 def load_config(config_path: str | Path | None = None) -> dict:
     """Return a validated nested dict with filesystem paths as absolute strings.
@@ -67,21 +69,40 @@ def load_config(config_path: str | Path | None = None) -> dict:
         section[keys[-1]] = str((path.parent / section[keys[-1]]).resolve())
 
     _validate_optional_extensions(config)
+    for dotted_key in _OPTIONAL_PATH_KEYS:
+        keys = dotted_key.split(".")
+        section = config
+        for key in keys[:-1]:
+            if not isinstance(section, dict) or key not in section:
+                section = None
+                break
+            section = section[key]
+        if section is None or keys[-1] not in section:
+            continue
+        section[keys[-1]] = str((path.parent / section[keys[-1]]).resolve())
     return config
 
 
 def _validate_optional_extensions(config: dict) -> None:
-    web = config.get("sources", {}).get("web")
+    web = config.get("sources", {}).get("web_scraping")
     if web is not None:
-        _validate_enabled_section(web, "sources.web")
+        _validate_enabled_section(web, "sources.web_scraping")
         if web["enabled"]:
-            _require_non_empty(web, "url", "sources.web.url")
+            _require_non_empty(web, "url", "sources.web_scraping.url")
             _require_positive_number(
-                web.get("timeout_seconds"), "sources.web.timeout_seconds"
+                web.get("timeout_seconds"),
+                "sources.web_scraping.timeout_seconds",
             )
-            offset = web.get("student_id_offset", 1000)
-            if isinstance(offset, bool) or not isinstance(offset, int):
-                raise ValueError("sources.web.student_id_offset must be an integer")
+            output = config.get("output")
+            if not isinstance(output, dict):
+                raise ValueError("output must be a JSON object")
+            if "scraped_quotes" not in output:
+                raise ValueError(
+                    "Missing required configuration key: output.scraped_quotes"
+                )
+            _require_non_empty(
+                output, "scraped_quotes", "output.scraped_quotes"
+            )
 
     for dotted_name, section in (
         ("sources.mongodb", config.get("sources", {}).get("mongodb")),
@@ -103,6 +124,20 @@ def _validate_optional_extensions(config: dict) -> None:
             raise ValueError(
                 f"{dotted_name}.server_selection_timeout_ms must be a positive integer"
             )
+
+    source = config.get("sources", {}).get("mongodb")
+    destination = config.get("output", {}).get("mongodb")
+    if (
+        isinstance(source, dict)
+        and source.get("enabled") is True
+        and isinstance(destination, dict)
+        and destination.get("enabled") is True
+        and source.get("database") == destination.get("database")
+        and source.get("collection") == destination.get("collection")
+    ):
+        raise ValueError(
+            "MongoDB source and output must use different collections"
+        )
 
 
 def _validate_enabled_section(section: object, dotted_name: str) -> None:

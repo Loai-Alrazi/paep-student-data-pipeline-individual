@@ -27,3 +27,64 @@ Duplicate Records : 1
 Missing Values : 4
 Processing Time : 2.20 seconds
 2026-09-26 19:40:22,211 | INFO | Pipeline completed.
+2026-10-06 02:35:14,883 | INFO | Pipeline started.
+2026-10-06 02:35:14,884 | INFO | Config loaded.
+2026-10-06 02:35:16,933 | INFO | Sources extracted: CSV=14, API=13, DATABASE=12 records.
+2026-10-06 02:35:17,589 | INFO | MongoDB source extracted: 12 records.
+2026-10-06 02:35:19,978 | INFO | Web scraping pipeline completed: 10 quote records written.
+2026-10-06 02:35:20,035 | INFO | Source validation completed: 6 rejected records collected.
+2026-10-06 02:35:20,046 | INFO | Cleaning completed.
+2026-10-06 02:35:20,065 | INFO | Integration completed: 8 integrated records.
+2026-10-06 02:35:20,071 | INFO | Incremental comparison completed: 8 new/changed, 0 unchanged, 0 reused rows.
+2026-10-06 02:35:20,071 | INFO | Starting student data transformation for 8 records.
+2026-10-06 02:35:20,073 | INFO | Replaced 1 missing major values with Unknown.
+2026-10-06 02:35:20,074 | INFO | Imputed 1 missing GPA values with median 3.00.
+2026-10-06 02:35:20,075 | INFO | Imputed 1 missing attendance values with median 85.00.
+2026-10-06 02:35:20,080 | INFO | Completed student data transformation for 8 records.
+2026-10-06 02:35:20,081 | INFO | Transformation completed.
+2026-10-06 02:35:20,093 | INFO | Final validation completed.
+2026-10-06 02:35:20,103 | INFO | Outputs written.
+2026-10-06 02:35:20,109 | INFO | Incremental state saved.
+2026-10-06 02:35:20,152 | INFO | Final dataset loaded to MongoDB collection paep_student_pipeline.final_students.
+2026-10-06 02:35:20,152 | INFO | ---
+## PIPELINE EXECUTION SUMMARY
+
+CSV Records : 14
+API Records : 13
+Database Records : 12
+Integrated Records : 8
+Valid Records : 8
+Rejected Records : 6
+Duplicate Records : 1
+Missing Values : 4
+Processing Time : 5.28 seconds
+2026-10-06 02:35:20,153 | INFO | Pipeline completed.
+2026-10-06 02:42:46,135 | INFO | Pipeline started.
+2026-10-06 02:42:46,135 | INFO | Config loaded.
+2026-10-06 02:42:48,186 | INFO | Sources extracted: CSV=14, API=13, DATABASE=12 records.
+2026-10-06 02:42:48,798 | INFO | MongoDB source extracted: 12 records.
+2026-10-06 02:42:50,954 | INFO | Web scraping pipeline completed: 10 quote records written.
+2026-10-06 02:42:50,999 | INFO | Source validation completed: 6 rejected records collected.
+2026-10-06 02:42:51,007 | INFO | Cleaning completed.
+2026-10-06 02:42:51,020 | INFO | Integration completed: 8 integrated records.
+2026-10-06 02:42:51,035 | INFO | Incremental comparison completed: 0 new/changed, 8 unchanged, 8 reused rows.
+2026-10-06 02:42:51,035 | INFO | Starting student data transformation for 0 records.
+2026-10-06 02:42:51,049 | INFO | Completed student data transformation for 0 records.
+2026-10-06 02:42:51,050 | INFO | Transformation completed.
+2026-10-06 02:42:51,071 | INFO | Final validation completed.
+2026-10-06 02:42:51,083 | INFO | Outputs written.
+2026-10-06 02:42:51,088 | INFO | Incremental state saved.
+2026-10-06 02:42:51,129 | INFO | Final dataset loaded to MongoDB collection paep_student_pipeline.final_students.
+2026-10-06 02:42:51,129 | INFO | ---
+## PIPELINE EXECUTION SUMMARY
+
+CSV Records : 14
+API Records : 13
+Database Records : 12
+Integrated Records : 8
+Valid Records : 8
+Rejected Records : 6
+Duplicate Records : 1
+Missing Values : 4
+Processing Time : 5.00 seconds
+2026-10-06 02:42:51,130 | INFO | Pipeline completed.
